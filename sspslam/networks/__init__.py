@@ -1,8 +1,8 @@
-_all__ = ["associativememory", "pathintegration", "workingmemory","objectvectorcells","gridcells","slam"]
+
+from .binding import CircularConvolution, Product
 from .associativememory import AssociativeMemory
-from .pathintegration import PathIntegration
+from .pathintegration import PathIntegration, PathIntegration_BCs_GCs
+from .pathHDintegration import PathHDIntegration
 from .workingmemory import AdditiveInputGatedMemory
-from .objectvectorcells import ObjectVectorCells
-from .gridcells import SSPNetwork, GridCellEncoders
-from .inputgatednetwork import InputGatedNetwork
-from .slam import SLAMNetwork
+from .slam import SLAMNetwork, get_slam_input_functions
+

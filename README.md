@@ -46,13 +46,41 @@ Sensory systems provide input in the form of an SSP representation of the vector
 This requires numpy, scipy, nengo, and nengo-spa (pytorch is optional if you'd like to use the neural network option for ssp decoding). To install the sspslam package:
  
 ```console
+pip install -r requirements.txt
 pip install .
 ```
 Example usage is in the experiments folder. These require matplotlib, pytry, nengo-ocl.
 
-## Contents
-- SSPSpace, RandomSSPSpace, HexagonalSSPSpace: Classes for constructing ssps. Includes encoding, decoding, similarity map plotting, etc.
-- PathIntegration: Nengo network for path integration
-- ObjectVectorCells: Nengo network for object vector cells
-- AssociativeMemory: Nengo network for associative memory
-- SLAMNetwork: Nengo network for SLAM, combines the above networks together. For current experiments, it requries object locations as input. The networks learn these online but the ground truth is needed to set up learning. Future packages will rework the network setup for more flexible use cases.
+#### Plotting requirements
+To run scripts in `make_plots` there additional requirements: you need GhostScript installed (the gs executable must be in your PATH), and an installation of TeXlive in your PATH that includes siunitx.sty, libertine.sty, libertinust1math.sty, mathrsfs.sty and amssymb.sty. If you are unable to install these, try commenting out lies 18-29 in `figure_utils.py`  and uncommenting lines 9-15. This will remove some of these requirements.
+
+## Usage
+An example of running the SLAM model on a randomly generated 2-D path:
+```
+cd experiments
+python run_slam.py --domain-dim 2 --seed 0  --save True --plot True --save_plot_True --ssp_dim 55 --pi_n_neurons 500
+```
+Other options are available, see `python run_slam.py --help`. 
+
+
+## Files and Folders
+
+
+* `sspslam`: The code for SSPs and the nengo SLAM and PI networks
+    * `sspspace.py`: Defines classes for SSP representation mapping, including HexagonalSSPSpace, RandomSSPSpace, SSPSpace, SPSpace
+    * `solvers.py`: Includes a sparse solver, LstsqThres
+    * `networks`: Nengo networks
+        * `pathintegration.py`: The PathIntegration network. Continuously updates an SSP given a velocity signal via a set of VCOs with attractor dynamics.
+        * `associativememory.py`: The AssociativeMemory network. Learns associations via PES and (optionally) Voja
+        * `binding.py`: Contains CircularConvolution and Product networks. The same as the ones in nengo.networks but with additional labelling to help with debugging 
+        * `workingmemory.py`, `pathHDintegration.py`: Not currently used.
+        * `slam.py`: The SLAMNetwork network. Works with cpu and ocl backends.
+* `utils`: Various helper functions (only those used in current code are mentioned below)
+	* `utils.py`: Includes `sparsity_to_x_intercept(d,p)`, a function for setting the intercept of d-dim ensemsble so that it has sparisty p (~p% of neurons active at any time), assuming the population is representing unit length vectors; also includes `get_mean_and_ci` which will return the mean and 95% CIs of a dataset.
+	* `figure_utils.py`: When imported it will change the matplotlib defaults (see `matplotlibrc`), also includes `circles` for plotting a set of circles, and `save` for saving nice figures
+* `experiments`: Scripts that use sspslam 
+    * `run_pathint.py`: Runs the PathIntegration network on a random path
+    * `run_slam.py`: Runs the SLAMNetwork on random path
+    * `slam_vs_pi_trials.py`: Runs PathIntegration and SLAMNetwork with different paths and different seeds and saves data
+
+

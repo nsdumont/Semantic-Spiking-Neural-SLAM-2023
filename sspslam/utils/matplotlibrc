@@ -1,0 +1,51 @@
+#   Code for the PhD Thesis
+#   "Harnessing Neural Dynamics as a Computational Resource: Building Blocks
+#   for Computational Neuroscience and Artificial Agents"
+#   Copyright (C) 2021  Andreas Stöckel
+#
+#   This program is free software: you can redistribute it and/or modify
+#   it under the terms of the GNU General Public License as published by
+#   the Free Software Foundation, either version 3 of the License, or
+#   (at your option) any later version.
+#
+#   This program is distributed in the hope that it will be useful,
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#   GNU General Public License for more details.
+#
+#   You should have received a copy of the GNU General Public License
+#   along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+font.family: sans-serif
+font.size: 9.0
+
+legend.fontsize: 9.0
+legend.frameon: False
+
+axes.labelsize: 9.0
+axes.titlesize: 9.0
+axes.titleweight: bold
+axes.xmargin: 0.05
+axes.ymargin: 0.05
+axes.linewidth: 0.566
+
+axes.spines.left:   True
+axes.spines.bottom: True
+axes.spines.top:    False
+axes.spines.right:  False
+
+xtick.labelsize: 9.0
+xtick.direction: in
+xtick.major.width: 0.566
+
+ytick.labelsize: 9.0
+ytick.direction: in
+ytick.major.width: 0.566
+
+figure.titlesize: 9.0
+figure.titleweight: bold
+figure.dpi: 200
+
+lines.linewidth: 1.132
+
+image.interpolation: nearest

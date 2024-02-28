@@ -1,6 +1,41 @@
 import numpy as np
 import math
+import scipy 
 
+def sparsity_to_x_intercept(d, p):
+    sign = 1
+    if p > 0.5:
+        p = 1.0 - p
+        sign = -1
+    return sign * np.sqrt(1-scipy.special.betaincinv((d-1)/2.0, 0.5, 2*p))
+
+
+def get_mean_and_ci(raw_data, n=3000, p=0.95):
+    """
+    Gets the mean and 95% confidence intervals of data *see Note
+    NOTE: data has to be grouped along rows, for example: having 5 sets of
+    100 data points would be a list of shape (5,100)
+    """
+    sample = []
+    upper_bound = []
+    lower_bound = []
+    sets = np.array(raw_data).shape[0]  # pylint: disable=E1136
+    data_pts = np.array(raw_data).shape[1]  # pylint: disable=E1136
+    print("Mean and CI calculation found %i sets of %i data points" % (sets, data_pts))
+    raw_data = np.array(raw_data)
+    for i in range(data_pts):
+        data = raw_data[:, i]
+        index = int(n * (1 - p) / 2)
+        samples = np.random.choice(data, size=(n, len(data)))
+        r = [np.mean(s) for s in samples]
+        r.sort()
+        ci = r[index], r[-index]
+        sample.append(np.mean(data))
+        lower_bound.append(ci[0])
+        upper_bound.append(ci[1])
+
+    data = {"mean": sample, "lower_bound": lower_bound, "upper_bound": upper_bound}
+    return data
 
 
 def Rd_sampling(n,d,seed=0.5):
@@ -21,90 +56,10 @@ def Rd_sampling(n,d,seed=0.5):
 
 
 
-def spiral_points(arc=1, separation=1):
-    """generate points on an Archimedes' spiral
-    with `arc` giving the length of arc between two points
-    and `separation` giving the distance between consecutive 
-    turnings
-    - approximate arc length with circle arc at given distance
-    - use a spiral equation r = b * phi
-    """
-    def p2c(r, phi):
-        """polar to cartesian
-        """
-        return (r * math.cos(phi), r * math.sin(phi))
-
-    # yield a point at origin
-    yield (0, 0)
-
-    # initialize the next point in the required distance
-    r = arc
-    b = separation / (2 * math.pi)
-    # find the first phi to satisfy distance of `arc` to the second point
-    phi = float(r) / b
-    while True:
-        yield p2c(r, phi)
-        # advance the variables
-        # calculate phi that will give desired arc length at current radius
-        # (approximating with circle)
-        phi += float(arc) / r
-        r = b * phi + 0.000001*math.sin(phi**2/5)
-        
-def spiral_path(ntimesteps, radius):
-    spiral_path = np.zeros((ntimesteps +10,2))
-    i=0
-    for res in spiral_points(1e-8,5e-6):
-        spiral_path[i,:] = res
-        i += 1
-        if i >= ( ntimesteps + 10):
-            break
-    spiral_path = spiral_path[10:,:]
-    
-    path = spiral_path
-    path = radius*path/np.max(np.abs(path))
-    return path
-
-def circles(x, y, s, c='b', vmin=None, vmax=None, ax=None, **kwargs):
-    """
-    License
-    --------
-    This code is under [The BSD 3-Clause License]
-    (http://opensource.org/licenses/BSD-3-Clause)
-    """
-
-    import numpy as np
-    import matplotlib.pyplot as plt
-    from matplotlib.patches import Circle
-    from matplotlib.collections import PatchCollection
-
-    if np.isscalar(c):
-        kwargs.setdefault('color', c)
-        c = None
-    if 'fc' in kwargs: kwargs.setdefault('facecolor', kwargs.pop('fc'))
-    if 'ec' in kwargs: kwargs.setdefault('edgecolor', kwargs.pop('ec'))
-    if 'ls' in kwargs: kwargs.setdefault('linestyle', kwargs.pop('ls'))
-    if 'lw' in kwargs: kwargs.setdefault('linewidth', kwargs.pop('lw'))
-
-    patches = [Circle((x_, y_), s_) for x_, y_, s_ in np.broadcast(x, y, s)]
-    collection = PatchCollection(patches, **kwargs)
-    if c is not None:
-        collection.set_array(np.asarray(c))
-        collection.set_clim(vmin, vmax)
-
-    if ax is None:    
-        ax = plt.gca()
-    ax.add_collection(collection)
-    ax.autoscale_view()
-    if c is not None:
-        plt.sci(collection)
-    return collection
-
-
 
 # All from nengolib. copied here to avoid conflicts with nengo v3
 import warnings
 
-import numpy as np
 from scipy.special import beta, betainc, betaincinv
 from nengo.dists import Distribution, UniformHypersphere
 

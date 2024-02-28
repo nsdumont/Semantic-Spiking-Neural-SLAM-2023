@@ -18,15 +18,15 @@ class SLAMTrial(pytry.Trial):
         self.param('domain_dim', domain_dim=2)
         self.param('sim time', time=120)
         self.param('path limit', limit=0.08)
-        self.param('ovc_n_neurons', ovc_n_neurons=800)
-        self.param('pi_n_neurons',  pi_n_neurons=700)
-        self.param('other_n_neurons', other_n_neurons=700)
-        self.param('grid_cell_neurons', grid_cell_neurons=1000)
+        self.param('mem_n_neurons', mem_n_neurons=800)
+        self.param('pi_n_neurons',  pi_n_neurons=400)
+        self.param('circonv_n_neurons', circonv_n_neurons=100)
+        self.param('gc_n_neurons', gc_n_neurons=1000)
     
     def evaluate(self, p):
         domain_dim = p.domain_dim
         bounds = np.tile([-1,1],(domain_dim,1))
-        ssp_space = sspslam.sspspace.HexagonalSSPSpace(domain_dim,ssp_dim=p.ssp_dim, 
+        ssp_space = sspslam.HexagonalSSPSpace(domain_dim,ssp_dim=p.ssp_dim, 
                          domain_bounds=1.1*bounds, length_scale=0.1)
         d = ssp_space.ssp_dim
         
@@ -43,73 +43,74 @@ class SLAMTrial(pytry.Trial):
         pathlen = path.shape[0]
         vels = (1/dt)*( path[(np.minimum(np.floor(timesteps/dt) + 1, pathlen-1)).astype(int),:] -
                        path[(np.minimum(np.floor(timesteps/dt), pathlen-2)).astype(int),:])
-        real_freqs = (ssp_space.phase_matrix @ vels.T)
-        scale_fac = 1/np.max(np.abs(real_freqs))
-        vels_scaled = vels*scale_fac
-        
-        real_ssp = ssp_space.encode(path)
-        
         
         n_items = 10
         view_rad = 0.2
-        item_locations = 0.9*radius*2*(sspslam.utils.Rd_sampling(n_items, domain_dim,seed=p.seed) - 0.5)
+	obj_locs = 0.9*radius*2*(sspslam.utils.Rd_sampling(n_landmarks, domain_dim, seed=args.seed) - 0.5)
+        vec_to_landmarks = obj_locs.reshape(n_landmarks, 1, domain_dim) - path.reshape(1, pathlen, domain_dim)
+
+	real_ssp = ssp_space.encode(path) 
+	landmark_ssps = ssp_space.encode(obj_locs)
+	lm_space = sspslam.SPSpace(n_landmarks, d, seed=p.seed)
+
+	velocity_func, vel_scaling_factor, is_landmark_in_view, landmark_id_func, landmark_sp_func, landmark_vec_func, landmark_vecssp_func = get_slam_input_functions(ssp_space, lm_space, vels, vec_to_landmarks, view_rad)
+
+	clean_up_method = 'grid'
         
         pi_n_neurons = p.pi_n_neurons
-        ovc_n_neurons = p.ovc_n_neurons
+        mem_n_neurons = p.mem_n_neurons
         other_n_neurons = p.other_n_neurons
+	gc_n_neurons = p.gc_n_neurons
         tau = 0.05
         model = nengo.Network(seed=p.seed)
         with model:
-            vel_input = nengo.Node(lambda t: vels_scaled[int(t/dt)-1] )#+ noise[int(t/dt)-1]
-            init_state = nengo.Node(lambda t: real_ssp[int(t/dt)-1] if t<0.05 else np.zeros(d))
+            vel_input = nengo.Node(velocity_func, label='vel_input')
+    	    init_state = nengo.Node(lambda t: real_ssp[int(np.minimum(np.floor(t/dt), n_timesteps-1))] if t<0.05 else np.zeros(d), label='init_state')
             
             # SLAM
-            slam = sspslam.networks.SLAMNetwork(ssp_space, item_locations, path, T, view_rad,
-        		pi_n_neurons, ovc_n_neurons, other_n_neurons, grid_cell_neurons, dt, tau, 
-                update_thres=0.2, scale_fac = scale_fac, clean_up_method='grid')
-            
-            nengo.Connection(vel_input, slam.vel_input, synapse=0.01)
-            nengo.Connection(init_state, slam.pathintegrator.input, synapse=None)
+            landmark_vec = nengo.Node(landmark_vec_func)
+    	    landmark_id = nengo.Node(landmark_id_func)
+    	    slam = sspslam.networks.SLAMNetwork(ssp_space, lm_space, view_rad, n_landmarks,
+            		pi_n_neurons, mem_n_neurons, circonv_n_neurons, 
+                    tau_pi = tau,update_thres=0.2, vel_scaling_factor =vel_scaling_factor,
+                    shift_rate=0.1,voja_learning_rate=5e-4, pes_learning_rate=1e-3,
+                    clean_up_method=clean_up_method, gc_n_neurons = gc_n_neurons, encoders=None, voja=True, seed=p.seed)
+    	    nengo.Connection(landmark_vec, slam.landmark_vec_input, synapse=None)
+    	    nengo.Connection(landmark_id, slam.landmark_id_input, synapse=None)
+    	    nengo.Connection(vel_input,slam.velocity_input, synapse=None) 
+    	    nengo.Connection(init_state, slam.pathintegrator.input, synapse=None)
             
             # vs. PI only
             pathintegrator = sspslam.networks.PathIntegration(ssp_space, pi_n_neurons, tau, 
-                          scaling_factor=scale_fac, stable=True)
-            nengo.Connection(vel_input,pathintegrator.velocity_input, synapse=0.01)
-            nengo.Connection(init_state, pathintegrator.input, synapse=None)
+                  scaling_factor=scale_fac, stable=True)
+    	    nengo.Connection(vel_input,pathintegrator.velocity_input, synapse=None)
+    	    nengo.Connection(init_state, pathintegrator.input, synapse=None)
 
             
-            ssp_slam_p  = nengo.Probe(slam.pathintegrator.output, synapse=0.05)
-            ssp_pi_p  = nengo.Probe(pathintegrator.output, synapse=0.05)
+            slam_output_p  = nengo.Probe(slam.pathintegrator.output, synapse=0.05)
+            pi_output_p  = nengo.Probe(pathintegrator.output, synapse=0.05)
             
         sim = nengo.Simulator(model)
-        sim.run(T)
+    	with sim:
+    	    sim.run(T)
         
-        def get_path_info(ssp_path):
-            sims = ssp_path @ slam.sample_ssps.T
-            max_sims = np.max(sims,axis=1)
-            arg_max_sim = np.argmax(sims,axis=1)
-            sim_path_est = slam.sample_points[arg_max_sim,:]
-            return max_sims, sim_path_est
-        
-        pi_sim_to_exact = np.sum(sim.data[ssp_pi_p]*real_ssp, axis=1)
-        pi_sim_to_closest, pi_sim_path  = get_path_info(sim.data[ssp_pi_p])
-        slam_sim_to_exact = np.sum(sim.data[ssp_slam_p]*real_ssp, axis=1)
-        slam_sim_to_closest, slam_sim_path  = get_path_info(sim.data[ssp_slam_p])
+        slam_sim_path  = ssp_space.decode(sim.data[slam_output_p], 'from-set','grid', 100)
+	pi_sim_path  = ssp_space.decode(sim.data[pi_output_p], 'from-set','grid', 100)
+
+	slam_sim = np.sum(sim.data[slam_output_p]*real_ssp,axis=1)/np.linalg.norm(sim.data[slam_output_p],axis=1)
+	pi_sim = np.sum(sim.data[pi_output_p]*real_ssp,axis=1)/np.linalg.norm(sim.data[pi_output_p],axis=1)
         
         return dict(
-             sim_pi_ssp = sim.data[ssp_pi_p],
-             sim_slam_ssp = sim.data[ssp_slam_p],
-             path=path,
+             path = path,
+             obj_locs=obj_locs,
              ts= sim.trange(),
              ssp_space=ssp_space,
-             scale_fac=scale_fac,
-             pi_sim_to_exact = pi_sim_to_exact,
+             slam_output_p = sim.data[slam_output_p],
+             pi_output_p = sim.data[pi_output_p],
+             pi_sim = pi_sim_to_exact,
              pi_sim_path = pi_sim_path,
-             pi_sim_to_closest= pi_sim_to_closest,
-             slam_sim_to_exact = slam_sim_to_exact,
+             slam_sim = slam_sim_to_exact,
              slam_sim_path = slam_sim_path,
-             slam_sim_to_closest= slam_sim_to_closest,
-             item_locations=item_locations
         )
 
 
