@@ -34,7 +34,7 @@ Running the SSP-SLAM model on a randomly generated 2-D path or making a gif to v
 python experiments/run_slam.py --backend ocl --domain-dim 2 --seed 0  --save --plot --save-plot --ssp-dim 55 --pi-n-neurons 500
 python experiments/run_slam_map_gif.py  --backend ocl --path-data example_paths/oneRoom_path2.npy
 ```
-Other options are available, see `python run_slam.py --help` and `python run_pathint.py --help`. Note that, currently, the default in some of these example scripts are not consistent.  
+Other options are available, see `python run_slam.py --help` and `python run_pathint.py --help`. Note that, currently, the default args in some of these example scripts are not consistent.  
 
 
 ## Files and Folders
