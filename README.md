@@ -160,4 +160,3 @@ Other options are available, see `python run_slam.py --help`.
     * `run_slam.py`: Runs the SLAMNetwork on random path or path from a data file and with random landmarks. Used for benchmarking and as an example use of sspslam.networks.SLAMNetwork (or sspslam.networks.SLAMLoihiNetwork if a loihi backend is used).
     * * `run_slamview.py`: Runs the SLAMViewNetwork
 
-
