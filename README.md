@@ -1,13 +1,65 @@
 # Spiking Semantic SLAM with Spatial Semantic Pointers
+<img src="https://github.com/nsdumont/Semantic-Spiking-Neural-SLAM-2023/blob/main/slam.png?raw=true" alt="SLAM diagram" width="500px">
+
 To navigate in new environments, an animal or robot must be able to keep track of it’s own position while simultaneously creating and updating an internal map of features in the environment, a problem known as simultaneous localization and mapping (SLAM). This requires integrating information from different domains, namely self-motion cues and sensory information. Recently, Spatial Semantic Pointers (SSPs) have been proposed as a vector representation of continuous space that can be encoded via neural activity. A key feature of this approach is that these spatial representations can be bound with other features, both continuous and discrete, to create compressed structures containing information from multiple domains (e.g. spatial, temporal, visual, conceptual). In this work, SSPs are used as the basis for a biological-plausible SLAM model called SSP-SLAM. It is shown that the self-motion driven dynamics of SSPs can be implemented with a hybrid oscillatory interference/ continuous attractor network of grid cells. The estimated self position represented by this network is used for online learning of an associative memory between landmarks and their positions – i.e. an environment map. This map in turn is used to provide corrections to the path integrator.
 
 
-See [Exploiting semantic information in a spiking neural SLAM system](https://www.frontiersin.org/journals/neuroscience/articles/10.3389/fnins.2023.1190515/full) for more detail.
+See [Exploiting semantic information in a spiking neural SLAM system](https://www.frontiersin.org/journals/neuroscience/articles/10.3389/fnins.2023.1190515/full) for more detail. 
+
+
+# Package Info
+## Install
+This requires numpy, scipy, nengo, nengo-ocl, and nengo-spa (tensorflow is optional if you'd like to use the neural network option for ssp decoding; nengo-loihi is optional if you'd like to use the loihi backend). To install the sspslam package:
+ 
+```console
+pip install -r requirements.txt
+pip install .
+```
+Example usage is in the experiments folder. Experiments require matplotlib.
+
+#### Plotting requirements
+To run scripts in `make_plots` there additional requirements: you need GhostScript installed (the gs executable must be in your PATH), and an installation of TeXlive in your PATH that includes siunitx.sty, libertine.sty, libertinust1math.sty, mathrsfs.sty and amssymb.sty. If you are unable to install these, try commenting out lies 18-29 in `figure_utils.py`  and uncommenting lines 9-15. This will remove some of these requirements.
+
+## Usage
+An example of running the SSP-PI model on a randomly generated 2-D path:
+```
+python experiments/run_pathint.py --backend ocl --limit 0.1 --pi-n-neurons 1000 --save --plot
+```
+Running SSP-PI model on a path from a file and making a gif of the output:
+```
+python experiments/run_pathint_gif.py --path-data example_paths/oneRoom_path.npy --pi-n-neurons 500 --n-rotates 5 --n-scales 5
+```
+Running the SSP-SLAM model on a randomly generated 2-D path or making a gif to visualize output:
+```
+python experiments/run_slam.py --backend ocl --domain-dim 2 --seed 0  --save --plot --save-plot --ssp-dim 55 --pi-n-neurons 500
+python experiments/run_slam_map_gif.py  --backend ocl --path-data example_paths/oneRoom_path2.npy
+```
+Other options are available, see `python run_slam.py --help` and `python run_pathint.py --help`. Note that, currently, the default in some of these example scripts are not consistent.  
+
+
+## Files and Folders
+* `sspslam`: The code for SSPs and the nengo SLAM and PI networks
+    * `sspspace.py`: Defines classes for SSP representation mapping, including HexagonalSSPSpace, RandomSSPSpace, SSPSpace, SPSpace
+    * `networks`: Nengo networks
+        * `pathintegration.py`: The PathIntegration network. Continuously updates an SSP given a velocity signal via a set of VCOs with attractor dynamics.
+        * `associativememory.py`: The AssociativeMemory network. Learns associations via PES and (optionally) Voja
+        * `binding.py`: Contains CircularConvolution and Product networks. The same as the ones in nengo.networks but with additional labelling to help with debugging 
+        * `workingmemory.py`, `pathHDintegration.py`: Not currently used.
+        * `slam.py`: The SLAMNetwork network. Works with cpu and ocl backends.
+        * `slam_loihi.py`: The SLAMLoihiNetwork network. Works with loihi backend.
+        * `slam_view.py`: The SLAMViewNetwork network. Uses a mapping from local view cells to self-location for loop closure rather than mapping landmark SPs to landmarks SSPs. Works with cpu and ocl backends.
+* `utils`: Various helper functions (only those used in current code are mentioned below)
+	* `utils.py`: Includes `sparsity_to_x_intercept(d,p)`, a function for setting the intercept of d-dim ensemsble so that it has sparisty p (around p percent of neurons active at any time), assuming the population is representing unit length vectors; also includes `get_mean_and_ci` which will return the mean and 95% CIs of a dataset.
+	* `figure_utils.py`: When imported, it will change the matplotlib defaults (see `matplotlibrc`), also includes `circles` for plotting a set of circles, and `save` for saving nice figures
+* `experiments`: Scripts that use sspslam 
+    * `run_pathint.py`: Runs the PathIntegration network on a random path or path from a data file. Used for benchmarking and as an example use of sspslam.networks.PathIntegration.
+    * `run_slam.py`: Runs the SLAMNetwork on random path or path from a data file and with random landmarks. Used for benchmarking and as an example use of sspslam.networks.SLAMNetwork (or sspslam.networks.SLAMLoihiNetwork if a loihi backend is used).
+    * * `run_slamview.py`: Runs the SLAMViewNetwork
+
 
 ## SSP-SLAM
-<img src="https://github.com/nsdumont/Semantic-Spiking-Neural-SLAM-2023/blob/main/slam.png?raw=true" alt="SLAM diagram" width="500px">
 
-The SSP-SLAM model, sspslam.networks.SLAMNetwork, is a [Nengo](https://www.nengo.ai) network. 
+The SSP-SLAM model, sspslam.networks.SLAMNetwork, is a [Nengo](https://www.nengo.ai) network. See the top of the readme for a diagram.
 
 ### Usage
 A basic example of importing SLAMNetwork and using it in a nengo network:
@@ -119,44 +171,4 @@ Other mappings can also be learned. For example, a network can be trained to map
 ## SLAM with local view cells
 <img src="https://github.com/nsdumont/Semantic-Spiking-Neural-SLAM-2023/blob/main/slam_localview.png?raw=true" alt="SLAM diagram" width="300px">
 We can also do SLAM with local view cells. Such a network is given in sspslam.networks.SLAMViewNetwork. 
-
-## Install
-This requires numpy, scipy, nengo, nengo-ocl, and nengo-spa (tensorflow is optional if you'd like to use the neural network option for ssp decoding; nengo-loihi is optional if you'd like to use the loihi backend). To install the sspslam package:
- 
-```console
-pip install -r requirements.txt
-pip install .
-```
-Example usage is in the experiments folder. Experiments require matplotlib.
-
-#### Plotting requirements
-To run scripts in `make_plots` there additional requirements: you need GhostScript installed (the gs executable must be in your PATH), and an installation of TeXlive in your PATH that includes siunitx.sty, libertine.sty, libertinust1math.sty, mathrsfs.sty and amssymb.sty. If you are unable to install these, try commenting out lies 18-29 in `figure_utils.py`  and uncommenting lines 9-15. This will remove some of these requirements.
-
-## Usage
-An example of running the SLAM model on a randomly generated 2-D path:
-```
-cd experiments
-python run_slam.py --backend ocl --domain-dim 2 --seed 0  --save --plot --save-plot --ssp-dim 55 --pi-n-neurons 500
-```
-Other options are available, see `python run_slam.py --help`. 
-
-
-## Files and Folders
-* `sspslam`: The code for SSPs and the nengo SLAM and PI networks
-    * `sspspace.py`: Defines classes for SSP representation mapping, including HexagonalSSPSpace, RandomSSPSpace, SSPSpace, SPSpace
-    * `networks`: Nengo networks
-        * `pathintegration.py`: The PathIntegration network. Continuously updates an SSP given a velocity signal via a set of VCOs with attractor dynamics.
-        * `associativememory.py`: The AssociativeMemory network. Learns associations via PES and (optionally) Voja
-        * `binding.py`: Contains CircularConvolution and Product networks. The same as the ones in nengo.networks but with additional labelling to help with debugging 
-        * `workingmemory.py`, `pathHDintegration.py`: Not currently used.
-        * `slam.py`: The SLAMNetwork network. Works with cpu and ocl backends.
-        * `slam_loihi.py`: The SLAMLoihiNetwork network. Works with loihi backend.
-        * `slam_view.py`: The SLAMViewNetwork network. Uses a mapping from local view cells to self-location for loop closure rather than mapping landmark SPs to landmarks SSPs. Works with cpu and ocl backends.
-* `utils`: Various helper functions (only those used in current code are mentioned below)
-	* `utils.py`: Includes `sparsity_to_x_intercept(d,p)`, a function for setting the intercept of d-dim ensemsble so that it has sparisty p (~p% of neurons active at any time), assuming the population is representing unit length vectors; also includes `get_mean_and_ci` which will return the mean and 95% CIs of a dataset.
-	* `figure_utils.py`: When imported, it will change the matplotlib defaults (see `matplotlibrc`), also includes `circles` for plotting a set of circles, and `save` for saving nice figures
-* `experiments`: Scripts that use sspslam 
-    * `run_pathint.py`: Runs the PathIntegration network on a random path or path from a data file. Used for benchmarking and as an example use of sspslam.networks.PathIntegration.
-    * `run_slam.py`: Runs the SLAMNetwork on random path or path from a data file and with random landmarks. Used for benchmarking and as an example use of sspslam.networks.SLAMNetwork (or sspslam.networks.SLAMLoihiNetwork if a loihi backend is used).
-    * * `run_slamview.py`: Runs the SLAMViewNetwork
 

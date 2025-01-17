@@ -1,6 +1,7 @@
 import nengo
 import numpy as np
 from sspslam.utils import sparsity_to_x_intercept
+import collections.abc
 
 ## Path integration network
 # Continuously updates a SSP S (shape d) representing x(t) (shape n) given dx/dt. 
@@ -109,6 +110,258 @@ class PathIntegration(nengo.network.Network):
                  with_gcs=False,n_gcs=1000,solver_weights=False,
                  label='pathint', **kwargs):
         super().__init__(label=label)
+        
+        d = ssp_space.ssp_dim
+        N = ssp_space.domain_dim
+        n_oscs = (d+1)//2
+        
+        if stable==True:
+            def feedback(x):
+                w =  x[2] / (scaling_factor * ssp_space.length_scale[0]) 
+                r = np.maximum(np.sqrt(x[0]**2 + x[1]**2), 1e-9)
+                dx0 = x[0]*(max_radius**2-r**2)/r - x[1]*w 
+                dx1 = x[1]*(max_radius**2-r**2)/r + x[0]*w 
+                out = np.array([recurrent_tau*dx0 + x[0], recurrent_tau*dx1 + x[1], [0]]).flatten()
+                return out
+        elif callable(stable):
+            feedback = stable
+        else:
+            def feedback(x): 
+                w = x[2]/ (scaling_factor * ssp_space.length_scale[0]) 
+                dx0 = - x[1]*w
+                dx1 =  x[0]*w
+                out = np.array([recurrent_tau*dx0 + x[0], recurrent_tau*dx1 + x[1], [0]]).flatten()
+                return out
+                
+        
+        to_SSP = get_from_Fourier(d)
+        to_Fourier = get_to_Fourier(d)
+        
+        # scaling
+        # phase_scales = 1/np.linalg.norm(ssp_space.phase_matrix,axis=1)
+        # phase_scales[~np.isfinite(phase_scales)] = 1
+        # vels_transform = ssp_space.phase_matrix * phase_scales[:,None]
+        
+        self.to_SSP = to_SSP
+        self.to_Fourier = to_Fourier
+        with self:
+            self.velocity_input = nengo.Node(label=label+"_vel_input", size_in=N)
+            self.input = nengo.Node(label=label+"_input", size_in=d)
+            if with_gcs:
+                encoders = ssp_space.sample_grid_encoders(n_gcs)
+                self.output = nengo.Ensemble(n_gcs,d, encoders = encoders,
+                                             intercepts=nengo.dists.Choice([sparsity_to_x_intercept(d, 0.1)]),
+                                             label=label+'_output')
+            else:
+                self.output = nengo.Node(size_in=d, label=label+'_output')
+            
+            # self.velocity = nengo.Ensemble(n_neurons, dimensions=N,label='velocity')
+            # nengo.Connection(self.velocity_input, self.velocity)
+            
+            # An ensemble for each VCO
+            self.oscillators = nengo.networks.EnsembleArray(n_neurons, n_oscs, 
+                                                            ens_dimensions = 3,
+                                                            radius = np.sqrt(2), 
+                                                            label=label+"_vco",
+                                                            **kwargs)
+            self.oscillators.output.output = lambda t, x: x
+            
+            # Transform initialization (or some correction...) from phi(x) to FFT{phi(x)} with real and imag
+            # components layed out
+            nengo.Connection(self.input,self.oscillators.input, transform=to_Fourier)
+            self.recur_conns  = []
+            for k in np.arange(1,n_oscs):
+                # nengo.Connection(self.input,self.oscillators.ea_ensembles[i], transform=to_Fourier[3*i:3*(i+1),:])
+                # Pass the input freq
+                nengo.Connection(self.velocity_input, self.oscillators.ea_ensembles[k], 
+                                  transform = np.vstack([np.zeros((2,N)), ssp_space.phase_matrix[k,:].reshape(1,-1)]),
+                                  synapse=None) # synapse for smoothing
+                # Recurrent connection for dynamics
+                conn = nengo.Connection(self.oscillators.ea_ensembles[k], self.oscillators.ea_ensembles[k],
+                                  function=feedback, 
+                                  synapse=recurrent_tau, solver=nengo.solvers.LstsqL2(weights=solver_weights))
+                                  #nengo.solvers.LstsqDrop(weights=True, drop=0.25))
+                                  #nengo.solvers.LstsqL2(weights=True))
+                self.recur_conns.append(conn)
+
+            # The DC term is constant
+            zerofreq = nengo.Node([1,0,0],label=label+'_zerofreq')
+            nengo.Connection(zerofreq, self.oscillators.ea_ensembles[0], synapse=None)
+            
+            nengo.Connection(self.oscillators.output, self.output, transform=to_SSP)
+            
+class PathIntegration_old(nengo.network.Network):
+    r"""  Nengo network that performs path integration (PI)
+    Uses velocity controlled oscillators (VCOs) with (optional) attractor dynamics
+    
+    Parameters
+    ----------
+        ssp_space : SSPSpace
+            Specifies the SSP representation that is being used.
+            
+        n_neurons : int
+            Number of neurons per VCO population.
+            
+        recurrent_tau : flaot
+            Synaptic constant for recurrent connections. Default is 0.05.
+            
+        scaling_factor : float
+            Scales the dynamics of the PI network. Used when velocity input has been normalized
+            Default is 1.
+            
+        stable : bool
+            Whether to use non-linear oscillator with attractor dynamics (True) 
+            or linear oscillator (False). Default is True.
+            
+        max_radius : float
+             Desired radius of oscillators. Only matters if stable=True. Default is 1.
+             
+        with_gcs : bool
+            Whether to use a population of grid cells to represent output (True),
+            or to use a node (False). Default is False.
+            
+        n_gcs : int
+            number of neurons in grid cell population if with_gcs=True.
+            
+        solver_weights : bool
+            If True solve for weights in recurrent connections, otherwise decoders
+
+            
+    Attributes
+    ----------
+        to_SSP, to_Fourier : np.ndarray
+            Arrays used to convert SSPs to and from Fourier space.
+            
+        input : Node
+            Input SSP. Can be used for initialization or corrections.
+            
+        oscillators : EnsembleArray
+           The collection of recurrent VCO populations.
+           
+        output : Node
+            Self-position estimate as an SSP. 
+
+    Examples
+    --------
+
+    A basic example where data (exact or approximate) on agent's velocity is given
+
+       from sspslam.networks import PathIntegration
+       
+       # Get data
+       domain_dim = ... # dim of space agent moves in 
+       initial_agent_position = ...
+       velocity_data = ...
+       vel_scaling_factor = ...
+       velocity_func = ... # function that returns (possible scaled by vel_scaling_factor) agent's velocity at time t
+
+       
+       # Construct SSPSpace
+       ssp_space = HexagonalSSPSpace(...)
+       d = ssp_space.ssp_dim
+       
+
+       with nengo.Network():
+           # If running agent online instead, these will be output from other networks
+           velocty = nengo.Node(velocity_func)
+           init_state = nengo.Node(lambda t: ssp_space.encode(initial_agent_position) if t<0.05 else np.zeros(d))
+           #
+           
+           pathintegrator = PathIntegration(ssp_space, 500, scaling_factor=vel_scaling_factor)
+           
+           nengo.Connection(velocty, pathintegrator.velocity_input, synapse=0.01) 
+           nengo.Connection(init_state, pathintegrator.input, synapse=None)
+           
+           pi_output_p = nengo.Probe(pathintegrator.output, synapse=0.05)
+
+
+    """
+    def __init__(self, ssp_space, n_neurons, recurrent_tau=0.05,
+                 scaling_factor=1, stable=True, max_radius=1, 
+                 with_gcs=False,n_gcs=1000,solver_weights=False,
+                 label='pathint', **kwargs):
+        super().__init__(label=label)
+        
+        d = ssp_space.ssp_dim
+        N = ssp_space.domain_dim
+        n_oscs = (d+1)//2
+        
+        if stable==True:
+            def feedback(x):
+                w =  x[2] / (scaling_factor * ssp_space.length_scale[0]) 
+                r = np.maximum(np.sqrt(x[0]**2 + x[1]**2), 1e-9)
+                dx0 = x[0]*(max_radius**2-r**2)/r - x[1]*w 
+                dx1 = x[1]*(max_radius**2-r**2)/r + x[0]*w 
+                out = np.array([recurrent_tau*dx0 + x[0], recurrent_tau*dx1 + x[1], [0]]).flatten()
+                return out
+        elif callable(stable):
+            feedback = stable
+        else:
+            def feedback(x): 
+                w = x[2] / (scaling_factor * ssp_space.length_scale[0]) 
+                dx0 = - x[1]*w
+                dx1 =  x[0]*w
+                out = np.array([recurrent_tau*dx0 + x[0], recurrent_tau*dx1 + x[1], [0]]).flatten()
+                return out
+                
+        
+        to_SSP = get_from_Fourier(d)
+        to_Fourier = get_to_Fourier(d)
+        
+        self.to_SSP = to_SSP
+        self.to_Fourier = to_Fourier
+        with self:
+            self.velocity_input = nengo.Node(label=label+"_vel_input", size_in=N)
+            self.input = nengo.Node(label=label+"_input", size_in=d)
+            if with_gcs:
+                encoders = ssp_space.sample_grid_encoders(n_gcs)
+                self.output = nengo.Ensemble(n_gcs,d, encoders = encoders,
+                                             intercepts=nengo.dists.Choice([sparsity_to_x_intercept(d, 0.1)]),
+                                             label=label+'_output')
+            else:
+                self.output = nengo.Node(size_in=d, label=label+'_output')
+            
+            # self.velocity = nengo.Ensemble(n_neurons, dimensions=N,label='velocity')
+            # nengo.Connection(self.velocity_input, self.velocity)
+            
+            # An ensemble for each VCO
+            self.oscillators = nengo.networks.EnsembleArray(n_neurons, n_oscs, 
+                                                            ens_dimensions = 3,
+                                                            radius = np.sqrt(2), 
+                                                            label=label+"_vco",
+                                                            **kwargs)
+            self.oscillators.output.output = lambda t, x: x
+            
+            # Transform initialization (or some correction...) from phi(x) to FFT{phi(x)} with real and imag
+            # components layed out
+            nengo.Connection(self.input,self.oscillators.input, transform=to_Fourier)
+            
+            for k in np.arange(1,n_oscs):
+                # nengo.Connection(self.input,self.oscillators.ea_ensembles[i], transform=to_Fourier[3*i:3*(i+1),:])
+                # Pass the input freq
+                nengo.Connection(self.velocity_input, self.oscillators.ea_ensembles[k], 
+                                  transform = np.vstack([np.zeros((2,N)), ssp_space.phase_matrix[k,:].reshape(1,-1)]),
+                                  synapse=None) 
+                # Recurrent connection for dynamics
+                nengo.Connection(self.oscillators.ea_ensembles[k], self.oscillators.ea_ensembles[k], 
+                                  function=feedback, 
+                                  synapse=recurrent_tau, solver=nengo.solvers.LstsqL2(weights=solver_weights))
+                                  #nengo.solvers.LstsqDrop(weights=True, drop=0.25))
+                                  #nengo.solvers.LstsqL2(weights=True))
+
+            # The DC term is constant
+            zerofreq = nengo.Node([1,0,0],label=label+'_zerofreq')
+            nengo.Connection(zerofreq, self.oscillators.ea_ensembles[0], synapse=None)
+            
+            nengo.Connection(self.oscillators.output, self.output, transform=to_SSP)
+
+class PathIntegrationReencode(nengo.network.Network):
+    def __init__(self, ssp_space, n_neurons, recurrent_tau=0.05,
+                 scaling_factor=1, stable=True, max_radius=1, 
+                 with_gcs=False,n_gcs=1000,solver_weights=False,
+                 cleanup_dt=1.0,
+                 label='pathint', **kwargs):
+        super().__init__(label=label)
         #max_radius = max_radius*conn_scale
         if stable==True:
             def feedback(x):
@@ -127,15 +380,19 @@ class PathIntegration(nengo.network.Network):
                 dx1 =  x[0]*w
                 out = np.array([recurrent_tau*dx0 + x[0], recurrent_tau*dx1 + x[1], [0]]).flatten()
                 return out
-        
-
+            
         d = ssp_space.ssp_dim
         N = ssp_space.domain_dim
         n_oscs = (d+1)//2
         
+        def cleanup_fun(t,x):
+            if (t % cleanup_dt) < 0.01:
+                return ssp_space.clean_up(x[None,:]).flatten() - x
+            else:
+                return np.zeros(d)
+            
         to_SSP = get_from_Fourier(d)
         to_Fourier = get_to_Fourier(d)
-        
         self.to_SSP = to_SSP
         self.to_Fourier = to_Fourier
         with self:
@@ -182,9 +439,264 @@ class PathIntegration(nengo.network.Network):
             nengo.Connection(zerofreq, self.oscillators.ea_ensembles[0], synapse=None)
             
             nengo.Connection(self.oscillators.output, self.output, transform=to_SSP)
+            
+            cleanup = nengo.Node(cleanup_fun, size_in=d)
+            nengo.Connection(self.oscillators.output, cleanup, transform=to_SSP)
+            nengo.Connection(cleanup, self.oscillators.input, transform=to_Fourier)
+            
             # for i in np.arange(0,n_oscs):
             #     nengo.Connection(self.oscillators.ea_ensembles[i], self.output, transform=to_SSP[:,3*i:3*(i+1)])
             
+            
+                       
+
+class PathIntegrationGC(nengo.network.Network):
+    def __init__(self, ssp_space, n_neurons, recurrent_tau=0.05,
+                 scaling_factor=1, stable=True, max_radius=1, 
+                 coupling_factor=0.1,solver_weights=False, coupling=False,
+                 label='pathint', **kwargs):
+        super().__init__(label=label)
+        #max_radius = max_radius*conn_scale
+        if coupling:
+            K = coupling_factor
+            def feedback(x):
+                w0 = (x[2]/scaling_factor)/ssp_space.length_scale[0]
+                w1 = (x[5]/scaling_factor)/ssp_space.length_scale[0]
+                w2 = (x[8]/scaling_factor)/ssp_space.length_scale[0]
+                
+                r0 = np.maximum(np.sqrt(x[0]**2 + x[1]**2), 1e-9)
+                r1 = np.maximum(np.sqrt(x[3]**2 + x[4]**2), 1e-9)
+                r2 = np.maximum(np.sqrt(x[6]**2 + x[7]**2), 1e-9)
+                
+                # Coupling for w0
+                w0 = w0 + (K / 2) * (
+                    (x[4] * x[0] - x[3] * x[1]) / r1 + 
+                    (x[7] * x[0] - x[6] * x[1]) / r2 - 
+                    (x[1] * x[3] - x[0] * x[4]) / r0 - 
+                    (x[1] * x[6] - x[0] * x[7])/ r0
+                )
+                
+                # Coupling for w1
+                w1 = w1 + (K / 2) * (
+                    (x[1] * x[3] - x[0] * x[4]) / r0 + 
+                    (x[7] * x[3] - x[6] * x[4]) / r2 - 
+                    (x[3] * x[1] - x[4] * x[0]) / r1 - 
+                    (x[3] * x[7] - x[4] * x[6]) / r1
+                )
+                
+                # Coupling for w2
+                w2 = w2 + (K / 2) * (
+                    (x[1] * x[6] - x[0] * x[7]) / r0 + 
+                    (x[4] * x[6] - x[3] * x[7]) / r1 - 
+                    (x[6] * x[1] - x[7] * x[0]) / r2 - 
+                    (x[6] * x[4] - x[7] * x[3]) / r2
+                )
+                
+                dx0 = x[0]*(max_radius**2-r0**2)/r0 - x[1]*w0  
+                dy0 = x[1]*(max_radius**2-r0**2)/r0 + x[0]*w0
+                dx1 = x[3]*(max_radius**2-r1**2)/r1 - x[4]*w1  
+                dy1 = x[4]*(max_radius**2-r1**2)/r1 + x[3]*w1
+                dx2 = x[6]*(max_radius**2-r2**2)/r2 - x[7]*w2  
+                dy2 = x[7]*(max_radius**2-r2**2)/r2 + x[6]*w2
+                
+                out = np.array([recurrent_tau*dx0 + x[0], 
+                                recurrent_tau*dy0 + x[1],
+                                [0],
+                                recurrent_tau*dx1 + x[3], 
+                                recurrent_tau*dy1 + x[4],
+                                [0],
+                                recurrent_tau*dx2 + x[6], 
+                                recurrent_tau*dy2 + x[7],
+                                [0]]).flatten()
+                return out
+        else:
+               def feedback(x):
+                   w0 = (x[2]/scaling_factor)/ssp_space.length_scale[0]
+                   w1 = (x[5]/scaling_factor)/ssp_space.length_scale[0]
+                   w2 = (x[8]/scaling_factor)/ssp_space.length_scale[0]
+                   
+                   r0 = np.maximum(np.sqrt(x[0]**2 + x[1]**2), 1e-9)
+                   r1 = np.maximum(np.sqrt(x[3]**2 + x[4]**2), 1e-9)
+                   r2 = np.maximum(np.sqrt(x[6]**2 + x[7]**2), 1e-9)
+                   
+                   
+                   dx0 = x[0]*(max_radius**2-r0**2)/r0 - x[1]*w0  
+                   dy0 = x[1]*(max_radius**2-r0**2)/r0 + x[0]*w0
+                   dx1 = x[3]*(max_radius**2-r1**2)/r1 - x[4]*w1  
+                   dy1 = x[4]*(max_radius**2-r1**2)/r1 + x[3]*w1
+                   dx2 = x[6]*(max_radius**2-r2**2)/r2 - x[7]*w2  
+                   dy2 = x[7]*(max_radius**2-r2**2)/r2 + x[6]*w2
+                   
+                   out = np.array([recurrent_tau*dx0 + x[0], 
+                                   recurrent_tau*dy0 + x[1],
+                                   [0],
+                                   recurrent_tau*dx1 + x[3], 
+                                   recurrent_tau*dy1 + x[4],
+                                   [0],
+                                   recurrent_tau*dx2 + x[6], 
+                                   recurrent_tau*dy2 + x[7],
+                                   [0]]).flatten()
+                   return out 
+
+        
+
+        d = ssp_space.ssp_dim
+        N = ssp_space.domain_dim
+        assert N==2
+        n_oscs = (d-1)//2
+        
+        to_SSP = get_from_Fourier(d)
+        to_Fourier = get_to_Fourier(d)
+        
+        self.to_SSP = to_SSP
+        self.to_Fourier = to_Fourier
+        with self:
+            self.velocity_input = nengo.Node(label=label+"_vel_input", size_in=N)
+            self.input = nengo.Node(label=label+"_input", size_in=d)
+            self.output = nengo.Node(size_in=d, label=label+'_output')
+            
+            # self.velocity = nengo.Ensemble(n_neurons, dimensions=N,label='velocity')
+            # nengo.Connection(self.velocity_input, self.velocity)
+            
+            # An ensemble for each VCO
+            self.oscillators = nengo.networks.EnsembleArray(n_neurons, 1 + n_oscs//3, 
+                                                            ens_dimensions = 9,
+                                                            radius = np.sqrt(6), 
+                                                            label=label+"_gc",
+                                                            **kwargs)
+            self.oscillators.output.output = lambda t, x: x
+            
+            # Transform initialization (or some correction...) from phi(x) to FFT{phi(x)} with real and imag
+            # components layed out
+            nengo.Connection(self.input,self.oscillators.input[6:], transform=to_Fourier)
+            
+            for i in range(1,n_oscs+1):
+                # nengo.Connection(self.input,self.oscillators.ea_ensembles[i], transform=to_Fourier[3*i:3*(i+1),:])
+                # Pass the input freq
+                nengo.Connection(self.velocity_input, self.oscillators.ea_ensembles[(i+2)//3][3*((i+2)%3) + 2], 
+                                  transform =  ssp_space.phase_matrix[i,:].reshape(1,-1),
+                                  synapse=recurrent_tau) # synapse for smoothing
+            for i in range(1,1+n_oscs//3):
+                # Recurrent connection for dynamics
+                nengo.Connection(self.oscillators.ea_ensembles[i], self.oscillators.ea_ensembles[i], 
+                                  function=feedback, 
+                                  synapse=recurrent_tau, solver=nengo.solvers.LstsqL2(weights=solver_weights))
+                                  #nengo.solvers.LstsqDrop(weights=True, drop=0.25))
+                                  #nengo.solvers.LstsqL2(weights=True))
+
+            # The DC term is constant
+            zerofreq = nengo.Node([0,0,0,0,0,0,1,0,0],label=label+'_zerofreq')
+            nengo.Connection(zerofreq, self.oscillators.ea_ensembles[0], synapse=None)
+            
+            nengo.Connection(self.oscillators.output[6:], self.output, transform=to_SSP)
+            # for i in np.arange(0,n_oscs):
+            #     nengo.Connection(self.oscillators.ea_ensembles[i], self.output, transform=to_SSP[
+            
+
+            
+## not done!! 
+# class PathIntegrationGC2(nengo.network.Network):
+#     def __init__(self, ssp_space, n_neurons, recurrent_tau=0.05,
+#                  scaling_factor=1, stable=True, max_radius=1, 
+#                  coupling_factor=0.1,solver_weights=False,
+#                  label='pathint', **kwargs):
+#         super().__init__(label=label)
+#         #max_radius = max_radius*conn_scale
+#         K = coupling_factor
+#         def feedback(x):
+#             w = (x[2]/scaling_factor)/ssp_space.length_scale[0]
+#             r = np.maximum(np.sqrt(x[0]**2 + x[1]**2), 1e-9)
+#             dx0 = x[0]*(max_radius**2-r**2)/r - x[1]*w 
+#             dx1 = x[1]*(max_radius**2-r**2)/r + x[0]*w 
+#             out = np.array([recurrent_tau*dx0 + x[0], recurrent_tau*dx1 + x[1], [0]]).flatten()
+#             return out
+        
+#         def feedback_gc(x):
+            
+#             r0 = np.maximum(np.sqrt(x[0]**2 + x[1]**2), 1e-9)
+#             r1 = np.maximum(np.sqrt(x[3]**2 + x[4]**2), 1e-9)
+#             r2 = np.maximum(np.sqrt(x[6]**2 + x[7]**2), 1e-9)
+            
+#             # Coupling for w0
+#             w0 =  (K / 2) * (
+#                 (x[4] * x[0] - x[3] * x[1]) / r1 + 
+#                 (x[7] * x[0] - x[6] * x[1]) / r2 - 
+#                 (x[1] * x[3] - x[0] * x[4]) / r0 - 
+#                 (x[1] * x[6] - x[0] * x[7])/ r0
+#             )
+            
+#             # Coupling for w1
+#             w1 = (K / 2) * (
+#                 (x[1] * x[3] - x[0] * x[4]) / r0 + 
+#                 (x[7] * x[3] - x[6] * x[4]) / r2 - 
+#                 (x[3] * x[1] - x[4] * x[0]) / r1 - 
+#                 (x[3] * x[7] - x[4] * x[6]) / r1
+#             )
+            
+#             # Coupling for w2
+#             w2 =  (K / 2) * (
+#                 (x[1] * x[6] - x[0] * x[7]) / r0 + 
+#                 (x[4] * x[6] - x[3] * x[7]) / r1 - 
+#                 (x[6] * x[1] - x[7] * x[0]) / r2 - 
+#                 (x[6] * x[4] - x[7] * x[3]) / r2
+#             )
+            
+            
+            
+#             out = np.array([w0,w1,w2]).flatten()
+#             return out
+
+        
+
+#         d = ssp_space.ssp_dim
+#         N = ssp_space.domain_dim
+#         assert N==2
+#         n_oscs = (d-1)//2
+        
+#         to_SSP = get_from_Fourier(d)
+#         to_Fourier = get_to_Fourier(d)
+        
+#         self.to_SSP = to_SSP
+#         self.to_Fourier = to_Fourier
+#         with self:
+#             self.velocity_input = nengo.Node(label=label+"_vel_input", size_in=N)
+#             self.input = nengo.Node(label=label+"_input", size_in=d)
+#             self.output = nengo.Node(size_in=d, label=label+'_output')
+            
+#             # self.velocity = nengo.Ensemble(n_neurons, dimensions=N,label='velocity')
+#             # nengo.Connection(self.velocity_input, self.velocity)
+            
+#             # An ensemble for each VCO
+#             self.oscillators = nengo.networks.EnsembleArray(n_neurons, 1 + n_oscs//3, 
+#                                                             ens_dimensions = 9,
+#                                                             radius = np.sqrt(6), 
+#                                                             label=label+"_gc",
+#                                                             **kwargs)
+#             self.oscillators.output.output = lambda t, x: x
+            
+#             # Transform initialization (or some correction...) from phi(x) to FFT{phi(x)} with real and imag
+#             # components layed out
+#             nengo.Connection(self.input,self.oscillators.input[6:], transform=to_Fourier)
+            
+#             for i in range(1,n_oscs+1):
+#                 # nengo.Connection(self.input,self.oscillators.ea_ensembles[i], transform=to_Fourier[3*i:3*(i+1),:])
+#                 # Pass the input freq
+#                 nengo.Connection(self.velocity_input, self.oscillators.ea_ensembles[(i+2)//3][3*((i+2)%3) + 2], 
+#                                   transform =  ssp_space.phase_matrix[i,:].reshape(1,-1),
+#                                   synapse=recurrent_tau) # synapse for smoothing
+#             for i in range(1,1+n_oscs//3):
+#                 # Recurrent connection for dynamics
+#                 nengo.Connection(self.oscillators.ea_ensembles[i], self.oscillators.ea_ensembles[i], 
+#                                   function=feedback, 
+#                                   synapse=recurrent_tau, solver=nengo.solvers.LstsqL2(weights=solver_weights))
+#                                   #nengo.solvers.LstsqDrop(weights=True, drop=0.25))
+#                                   #nengo.solvers.LstsqL2(weights=True))
+
+#             # The DC term is constant
+#             zerofreq = nengo.Node([0,0,0,0,0,0,1,0,0],label=label+'_zerofreq')
+#             nengo.Connection(zerofreq, self.oscillators.ea_ensembles[0], synapse=None)
+            
+#             nengo.Connection(self.oscillators.output[6:], self.output, transform=to_SSP)
             
 class PathIntegration_BCs_GCs(nengo.network.Network):
     def __init__(self, ssp_space, n_neurons, n_gc_neurons, recurrent_tau,

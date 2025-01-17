@@ -183,19 +183,27 @@ class SLAMNetwork(nengo.network.Network):
                 tau=0.01, tau_pi = 0.05,
                 update_thres=0.2, vel_scaling_factor =1.0,rad_scaling_factor=1.0, shift_rate=0.1,
                 voja_learning_rate=5e-4, pes_learning_rate=1e-2,
-                clean_up_method='grid', gc_n_neurons = 0, encoders=None, voja=True,seed=0):
+                clean_up_method='grid', gc_n_neurons = 0, encoders=None, voja=True,seed=0,
+                 landmark_sps=None, intercept=None):
         super().__init__()
         
         domain_dim = ssp_space.domain_dim
        	d=ssp_space.ssp_dim
                
         rng = np.random.RandomState(seed=seed)
-        landmark_sps = lm_space.vectors
+        if landmark_sps is None:
+            landmark_sps = lm_space.vectors
         # if landmark_sps is None:
         #     landmark_sps = nengo.dists.UniformHypersphere(surface=True).sample(n_landmarks, d, rng=rng)
         if (not voja) and (encoders is None):
             encoders = landmark_sps[rng.randint(n_landmarks,size=mem_n_neurons),:]
-        intercept = (np.dot(landmark_sps, landmark_sps.T) - np.eye(n_landmarks)).flatten().max()
+        if intercept is None:
+            intercept = np.min([(np.dot(landmark_sps, landmark_sps.T) - np.eye(n_landmarks)).flatten().max(),
+                                0.5])
+        
+        ovc_n_neurons = mem_n_neurons
+        ovc_vectors = nengo.dists.ScatteredHypersphere(surface=False,min_magnitude=1e-3).sample(ovc_n_neurons, ssp_space.domain_dim)
+        OVC_encoders = ssp_space.encode(ovc_vectors)
         
 
         if clean_up_method=='grid':
@@ -214,13 +222,6 @@ class SLAMNetwork(nengo.network.Network):
             
         self.clean_up_fun = clean_up_fun
    
-    
-        
-        def is_landmark_in_view(t, x):
-            if np.linalg.norm(x) <= view_rad:
-                return 0
-            else:
-                return 1
         
         def update_state_func(t,x):
             if ( np.allclose(x[-1],0,atol=1e-3) & (np.sum(x[:d]*x[d:-1]) > update_thres)): #(t<init_t) | 
@@ -231,14 +232,12 @@ class SLAMNetwork(nengo.network.Network):
         
         with self:
             self.velocity_input = nengo.Node(size_in=domain_dim, label='vel_input')
-            self.landmark_vec_input = nengo.Node(size_in=domain_dim, label='lm_vec_input')
-            self.landmark_id_input = nengo.Node(lambda t,x: landmark_sps[int(x)] if x>0
-                                                else np.zeros(d), size_in=1, label='lm_id_input')
+            self.landmark_id_input = nengo.Node(size_in=d, label='lm_id_input')
             
-            self.landmark_vec_ssp = nengo.Node(lambda t,x: ssp_space.encode(x).flatten(), size_in=domain_dim, label='lm_vecssp_input')
-            nengo.Connection(self.landmark_vec_input, self.landmark_vec_ssp, synapse=None)
-            self.no_landmark_in_view = nengo.Node(is_landmark_in_view, size_in=domain_dim, label='lm_in_view_input')
-            nengo.Connection(self.landmark_vec_input, self.no_landmark_in_view, synapse=None)
+            self.landmark_vec_ssp = nengo.Node(size_in=d, label='lm_vecssp_input')
+            # self.no_landmark_in_view = nengo.Node(is_landmark_in_view, size_in=domain_dim, label='lm_in_view_input')
+            # nengo.Connection(self.landmark_vec_input, self.no_landmark_in_view, synapse=None)
+            self.no_landmark_in_view = nengo.Node(size_in=1, label='lm_in_view_input')
             
             self.update_state = nengo.Node(update_state_func,size_in=2*d + 1)
             nengo.Connection(self.no_landmark_in_view, self.update_state[-1], synapse=None)
@@ -251,11 +250,11 @@ class SLAMNetwork(nengo.network.Network):
             nengo.Connection(self.update_state,self.pathintegrator.input, synapse=None)
             
             # Object vec cells
-            # self.ovc_ens = nengo.Ensemble(ovc_n_neurons, d)#, encoders= OVC_encoders)
-            # nengo.Connection(self.landmark_vec_ssp,self.ovc_ens, synapse=None)
+            self.ovc_ens = nengo.Ensemble(ovc_n_neurons, d, encoders= OVC_encoders)
+            nengo.Connection(self.landmark_vec_ssp,self.ovc_ens, synapse=None)
             
             self.landmark_ssp_ens = CircularConvolution(circonv_n_neurons, dimensions=d, label='landmark_circonv')
-            nengo.Connection(self.landmark_vec_ssp, self.landmark_ssp_ens.input_b, synapse=None)
+            nengo.Connection(self.ovc_ens, self.landmark_ssp_ens.input_b, synapse=None)
             
             # Clean-up
             if gc_n_neurons is None:
@@ -263,7 +262,7 @@ class SLAMNetwork(nengo.network.Network):
             elif gc_n_neurons>0:
                 gc_encoders = ssp_space.sample_grid_encoders(gc_n_neurons)
                 cleanup = nengo.Node(lambda t,x: clean_up_fun(x), size_in=d)
-                self.gridcells = nengo.Ensemble(gc_n_neurons,d, encoders = gc_encoders)
+                self.gridcells = nengo.Ensemble(gc_n_neurons, d, encoders = gc_encoders)
                 nengo.Connection(self.pathintegrator.output, cleanup, synapse=tau)
                 nengo.Connection(cleanup, self.gridcells, synapse=tau)
                 nengo.Connection(self.gridcells, self.landmark_ssp_ens.input_a, synapse=tau)
@@ -285,7 +284,7 @@ class SLAMNetwork(nengo.network.Network):
             
             # Estimate position using env map
             self.position_estimate = CircularConvolution(circonv_n_neurons, d, invert_a=True, label='newpos_circonv')
-            nengo.Connection(self.landmark_vec_ssp, self.position_estimate.input_a, synapse=tau)
+            nengo.Connection(self.ovc_ens, self.position_estimate.input_a, synapse=tau)
             # self.assomemory.recall.output=lambda t, x: x
             nengo.Connection(self.assomemory.recall, self.position_estimate.input_b, 
                              synapse=tau, function=lambda x: ssp_space.make_unitary(x))
@@ -377,15 +376,14 @@ def get_slam_input_functions(ssp_space, lm_space, velocity_data, vec_to_landmark
     
     landmark_sps = lm_space.vectors
        
-    real_freqs = (ssp_space.phase_matrix @ velocity_data.T)
-    vel_scaling_factor = 1/np.max(np.abs(real_freqs))
+    vel_scaling_factor = 1/np.max(np.abs(ssp_space.phase_matrix @ velocity_data.T))
     vels_scaled = velocity_data*vel_scaling_factor
-    velocity_func = lambda t: vels_scaled[int(np.minimum(np.floor(t/dt), pathlen-2))]
+    velocity_func = lambda t: vels_scaled[int((t-dt)/dt)]
     
     # At time t, if a landmark(s) is in view return the index of the landmark, else return -1
     # Only used for constructing the later functions
     def landmark_id_func(t):
-        current_vecs = vec_to_landmarks_data[int(np.minimum(np.floor(t/dt), pathlen-2)),:,:]
+        current_vecs = vec_to_landmarks_data[int((t-dt)/dt),:,:]
         dists = np.linalg.norm(current_vecs, axis=1)
         if np.all(dists > view_rad):
             return -1
@@ -398,7 +396,7 @@ def get_slam_input_functions(ssp_space, lm_space, velocity_data, vec_to_landmark
         if cur_id<0:
             return np.zeros(domain_dim)
         else:
-            return vec_to_landmarks_data[int(np.minimum(np.floor(t/dt), pathlen-2)),cur_id, :]
+            return vec_to_landmarks_data[int((t-dt)/dt),cur_id, :]
         
    # At time t, if a landmark is in view return the Semantic Pointer representation of the landmark
     def landmark_sp_func(t):
@@ -420,6 +418,65 @@ def get_slam_input_functions(ssp_space, lm_space, velocity_data, vec_to_landmark
     def is_landmark_in_view(t):
         cur_id = landmark_id_func(t)
         if cur_id<0:
+            return 10
+        else:
+            return 0
+        
+    return velocity_func, vel_scaling_factor, is_landmark_in_view, landmark_id_func, landmark_sp_func, landmark_vec_func, landmark_vecssp_func
+
+
+
+def get_slam_input_functions2(ssp_space, lm_space, velocity_data, vec_to_landmarks_data, view_rad, dt=0.001):
+  
+    n_landmarks = vec_to_landmarks_data.shape[1]
+    pathlen = vec_to_landmarks_data.shape[0]
+    domain_dim = vec_to_landmarks_data.shape[2]
+    d = ssp_space.ssp_dim
+    
+    landmark_sps = lm_space.vectors
+       
+    vel_scaling_factor = 1/np.max(np.abs(ssp_space.phase_matrix @ velocity_data.T))
+    vels_scaled = velocity_data*vel_scaling_factor
+    velocity_func = lambda t: vels_scaled[int((t-dt)/dt)]
+    
+    # At time t, if a landmark(s) is in view return the index of the landmark, else return -1
+    # Only used for constructing the later functions
+    def landmark_id_func(t):
+        current_vecs = vec_to_landmarks_data[int((t-dt)/dt),:,:]
+        dists = np.linalg.norm(current_vecs, axis=1)
+        if np.all(dists > view_rad):
+            return None
+        else:
+            return np.where(dists <= view_rad)[0]
+        
+    # At time t, if a landmark is in view return the vector to the landmark (from the input data)
+    def landmark_vec_func(t):
+        cur_ids = landmark_id_func(t)
+        if cur_ids is None:
+            return np.zeros(domain_dim)
+        else:
+            return np.sum([vec_to_landmarks_data[int((t-dt)/dt),cur_id, :] for cur_id in cur_ids],axis=0)
+        
+   # At time t, if a landmark is in view return the Semantic Pointer representation of the landmark
+    def landmark_sp_func(t):
+        cur_ids = landmark_id_func(t)
+        if cur_ids is None:
+            return np.zeros(d)
+        else:
+            return np.sum([landmark_sps[cur_id] for cur_id in cur_ids],axis=0)
+            
+    # At time t, if a landmark is in view return the SSP representation of the vector to the landmark (from the input data)  
+    def landmark_vecssp_func(t):
+        cur_ids = landmark_id_func(t)
+        if cur_ids is None:
+            return np.zeros(d)
+        else:
+            return np.sum([ssp_space.encode(vec_to_landmarks_data[int(np.minimum(np.floor(t/dt), pathlen-2)), cur_id, :]).flatten() for cur_id in cur_ids],axis=0)
+
+    # Is an item in view at time t? if no return 10 else return 0. Used for inhibiting neural populations
+    def is_landmark_in_view(t):
+        cur_ids = landmark_id_func(t)
+        if cur_ids is None:
             return 10
         else:
             return 0

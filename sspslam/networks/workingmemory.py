@@ -22,7 +22,7 @@ class AdditiveInputGatedMemory(Network):
         difference_synapse=None,
         **kwargs,
     ):
-        super().__init__(**kwargs)
+        super().__init__()
 
         if difference_synapse is None:
             difference_synapse = recurrent_synapse
@@ -31,7 +31,7 @@ class AdditiveInputGatedMemory(Network):
 
         with self:
             # integrator to store value
-            self.mem = EnsembleArray(n_neurons, dimensions, label="mem")
+            self.mem = EnsembleArray(n_neurons, dimensions, label="mem", **kwargs)
             Connection(
                 self.mem.output,
                 self.mem.input,
@@ -62,11 +62,10 @@ class AdditiveInputGatedMemory(Network):
                         synapse=None,
                     )
             else:
-                inputnetneurons.add_neuron_input() 
                 Connection(
                     self.gate,
-                    inputnetneurons.neuron_input,
-                    transform=np.ones((inputnetneurons.n_neurons, 1)) * -10,
+                    inputnetneurons,
+                    transform=np.ones((inputnetneurons.size_in, 1)) * -10,
                     synapse=None,
                 )
 
