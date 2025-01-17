@@ -5,8 +5,9 @@ To navigate in new environments, an animal or robot must be able to keep track o
 See [Exploiting semantic information in a spiking neural SLAM system](https://www.frontiersin.org/journals/neuroscience/articles/10.3389/fnins.2023.1190515/full) for more detail.
 
 ## SSP-SLAM
-![SLAM diagram](https://github.com/ctn-waterloo/ssp_slam/blob/main/slam.png?raw=true)
-The SSP-SLAM model, sspslam.networks.SLAMNetwork, is a [nengo](https://www.nengo.ai) network. 
+<img src="https://github.com/nsdumont/Semantic-Spiking-Neural-SLAM-2023/blob/main/slam.png?raw=true" alt="SLAM diagram" width="500px">
+
+The SSP-SLAM model, sspslam.networks.SLAMNetwork, is a [Nengo](https://www.nengo.ai) network. 
 
 ### Usage
 A basic example of importing SLAMNetwork and using it in a nengo network:
@@ -115,8 +116,8 @@ This heteroassociative memory network is used to map representations of features
 
 Other mappings can also be learned. For example, a network can be trained to map feature locations $\hat{\phi}(\mathbf{x}_i)$, to feature symbols. Or, alternatively, a mapping from feature locations to feature symbols bound with their location,  $\hat{\phi}(\mathbf{x}_i) \circledast B$, can be learned. Given an SSP input that represents the whole area of an environment, the network will approximately recall $\sum_i \phi(\mathbf{x}_i) \circledast B_i$, and so a single vector representation of a complete map can be recovered. 
 
-### SLAM with local view cells
-![SLAM diagram](https://github.com/ctn-waterloo/ssp_slam/blob/main/slam_localview.png?raw=true)
+## SLAM with local view cells
+<img src="https://github.com/nsdumont/Semantic-Spiking-Neural-SLAM-2023/blob/main/slam_localview.png?raw=true" alt="SLAM diagram" width="300px">
 We can also do SLAM with local view cells. Such a network is given in sspslam.networks.SLAMViewNetwork. 
 
 ## Install
