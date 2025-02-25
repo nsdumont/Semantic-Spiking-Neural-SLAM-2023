@@ -693,6 +693,7 @@ class HexagonalSSPSpace(SSPSpace):
         d = self.ssp_dim
         n = self.domain_dim
         A = self.phase_matrix
+        k = (d - 1) // 2
         if d % 2 == 0:
             N = ((d-2)//2)//(n+1)
         else:
@@ -702,20 +703,24 @@ class HexagonalSSPSpace(SSPSpace):
             num_pts = int(np.ceil(n_neurons**(1/self.domain_dim)))
         else:
             num_pts = n_neurons
-                
-        sample_pts = self.get_sample_points(num_pts, method=method)[:n_neurons,:] 
-        sorts =  self.rng.integers(0, N, size = n_neurons)      
-        
-        encoders = np.zeros((n_neurons,d))
+
+        sample_pts = self.get_sample_points(num_pts, method=method)[:n_neurons, :]
+        n_per_pattern = int(np.floor(n_neurons / N))
+        sorts = np.concatenate(
+            [np.repeat(np.arange(0, N), n_per_pattern), self.rng.integers(0, N, size=n_neurons - N * n_per_pattern)])
+
+        encoders = np.zeros((n_neurons, d))
         for i in range(n_neurons):
             res = np.zeros(d, dtype=complex)
-            res[(1 + sorts[i]*(n+1)):(n + 2 + sorts[i]*(n+1)) ] = np.exp( 1.j * A[(1 + sorts[i]*(n+1)):(n + 2 + sorts[i]*(n+1)) ] @ sample_pts[i,:])
-            res[-(n + 1 + sorts[i]*(n+1)):-(sorts[i]*(n+1)+ (sorts[i]==0))] = np.exp( 1.j * A[-(n + 1 + sorts[i]*(n+1)):-(sorts[i]*(n+1) + (sorts[i]==0))] @ sample_pts[i,:])
-            encoders[i,:] = np.fft.ifft(res).real
-        res[0] = 1
-        if d%2==0:
-            res[d//2] = 1
-            
+            res[(1 + sorts[i] * n):(n + 1 + sorts[i] * n)] = np.exp(
+                1.j * A[(1 + sorts[i] * n):(n + 1 + sorts[i] * n)] @ sample_pts[i, :])
+            res[(k + 1):] = np.conjugate(np.flip(res[1:(k + 1)]))
+            res[0] = 1
+            if d % 2 == 0:
+                res[d // 2] = 1
+            encoders[i, :] = np.fft.ifft(res).real
+        encoders = encoders / np.linalg.norm(encoders, axis=-1, keepdims=True)
+
         return encoders
         
     

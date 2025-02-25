@@ -261,10 +261,11 @@ class SLAMNetwork(nengo.network.Network):
                 nengo.Connection(self.pathintegrator.output, self.landmark_ssp_ens.input_a, synapse=tau)
             elif gc_n_neurons>0:
                 gc_encoders = ssp_space.sample_grid_encoders(gc_n_neurons)
-                cleanup = nengo.Node(lambda t,x: clean_up_fun(x), size_in=d)
-                self.gridcells = nengo.Ensemble(gc_n_neurons, d, encoders = gc_encoders)
+                gc_encoders = gc_encoders / np.linalg.norm(gc_encoders, axis=-1, keepdims=True)
+                self.cleanup = nengo.Node(lambda t,x: clean_up_fun(x), size_in=d)
+                self.gridcells = nengo.Ensemble(gc_n_neurons, d, encoders=gc_encoders, intercepts=nengo.dists.CosineSimilarity(d+2))
                 nengo.Connection(self.pathintegrator.output, cleanup, synapse=tau)
-                nengo.Connection(cleanup, self.gridcells, synapse=tau)
+                nengo.Connection(cleanup, self.gridcells, synapse=None)
                 nengo.Connection(self.gridcells, self.landmark_ssp_ens.input_a, synapse=tau)
             else:
                 self.gridcells = nengo.Node(lambda t,x: clean_up_fun(x), size_in=d)
