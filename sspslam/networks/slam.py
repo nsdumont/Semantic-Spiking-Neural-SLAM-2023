@@ -1,7 +1,8 @@
 import numpy as np
 import nengo
-from . import PathIntegration, AssociativeMemory, CircularConvolution, Product
-
+from .pathintegration import PathIntegration
+from .associativememory import AssociativeMemory
+from .binding import CircularConvolution, Product
 
 
 class SLAMNetwork(nengo.network.Network):
@@ -204,15 +205,14 @@ class SLAMNetwork(nengo.network.Network):
         ovc_n_neurons = mem_n_neurons
         ovc_vectors = nengo.dists.ScatteredHypersphere(surface=False,min_magnitude=1e-3).sample(ovc_n_neurons, ssp_space.domain_dim)
         OVC_encoders = ssp_space.encode(ovc_vectors)
-        
 
+        sample_ssps, sample_points = ssp_space.get_sample_pts_and_ssps(100)
+        self.sample_ssps = sample_ssps
+        self.sample_points = sample_points
         if clean_up_method=='grid':
-            sample_ssps,sample_points = ssp_space.get_sample_pts_and_ssps(100)
             def clean_up_fun(x):
                 sims =  sample_ssps @ x
                 return sample_ssps[np.argmax(sims),:]
-            self.sample_ssps = sample_ssps
-            self.sample_points = sample_points
         else:
             if (clean_up_method=='network' ) | (clean_up_method=='network-optim') :
                 ssp_space.train_decoder_net(n_training_pts=200000, n_hidden_units = 8,
@@ -222,6 +222,13 @@ class SLAMNetwork(nengo.network.Network):
             
         self.clean_up_fun = clean_up_fun
    
+    
+        
+        # def is_landmark_in_view(t, x):
+        #     if np.linalg.norm(x) <= view_rad:
+        #         return 0
+        #     else:
+        #         return 1
         
         def update_state_func(t,x):
             if ( np.allclose(x[-1],0,atol=1e-3) & (np.sum(x[:d]*x[d:-1]) > update_thres)): #(t<init_t) | 
@@ -243,36 +250,40 @@ class SLAMNetwork(nengo.network.Network):
             nengo.Connection(self.no_landmark_in_view, self.update_state[-1], synapse=None)
              
             # PI network
-            self.pathintegrator = PathIntegration(ssp_space, pi_n_neurons, tau_pi, max_radius=rad_scaling_factor,
-                          scaling_factor=vel_scaling_factor, stable=True, label='pathint')
+            self.pathintegrator = PathIntegration(ssp_space, pi_n_neurons, tau_pi,
+                                    max_radius=rad_scaling_factor,
+                                    scaling_factor=vel_scaling_factor,
+                                    stable=True,solver_weights=False, label='pathint')
             self.output = self.pathintegrator.output
-            nengo.Connection(self.velocity_input,self.pathintegrator.velocity_input, synapse=None)
-            nengo.Connection(self.update_state,self.pathintegrator.input, synapse=None)
+            nengo.Connection(self.velocity_input, self.pathintegrator.velocity_input, synapse=None)
+            nengo.Connection(self.update_state, self.pathintegrator.input, synapse=None)
             
             # Object vec cells
-            self.ovc_ens = nengo.Ensemble(ovc_n_neurons, d, encoders= OVC_encoders)
+            self.ovc_ens = nengo.Ensemble(ovc_n_neurons, d, encoders=OVC_encoders)
             nengo.Connection(self.landmark_vec_ssp,self.ovc_ens, synapse=None)
             
             self.landmark_ssp_ens = CircularConvolution(circonv_n_neurons, dimensions=d, label='landmark_circonv')
             nengo.Connection(self.ovc_ens, self.landmark_ssp_ens.input_b, synapse=None)
             
             # Clean-up
-            if gc_n_neurons is None:
-                nengo.Connection(self.pathintegrator.output, self.landmark_ssp_ens.input_a, synapse=tau)
-            elif gc_n_neurons>0:
-                gc_encoders = ssp_space.sample_grid_encoders(gc_n_neurons)
-                gc_encoders = gc_encoders / np.linalg.norm(gc_encoders, axis=-1, keepdims=True)
-                self.cleanup = nengo.Node(lambda t,x: clean_up_fun(x), size_in=d)
-                self.gridcells = nengo.Ensemble(gc_n_neurons, d, encoders=gc_encoders, intercepts=nengo.dists.CosineSimilarity(d+2))
-                nengo.Connection(self.pathintegrator.output, cleanup, synapse=tau)
-                nengo.Connection(cleanup, self.gridcells, synapse=None)
-                nengo.Connection(self.gridcells, self.landmark_ssp_ens.input_a, synapse=tau)
-            else:
-                self.gridcells = nengo.Node(lambda t,x: clean_up_fun(x), size_in=d)
+            if gc_n_neurons<=0:
+                self.gridcells = nengo.Node(lambda t, x: clean_up_fun(x), size_in=d)
                 nengo.Connection(self.pathintegrator.output, self.gridcells, synapse=tau)
                 nengo.Connection(self.gridcells, self.landmark_ssp_ens.input_a, synapse=None)
-            
-                        
+
+            elif gc_n_neurons>0:
+                gc_encoders = ssp_space.sample_grid_encoders(gc_n_neurons)
+                self.cleanup = nengo.Node(lambda t,x: clean_up_fun(x), size_in=d)
+                self.gridcells = nengo.Ensemble(gc_n_neurons, d, encoders=gc_encoders,
+                                                intercepts=nengo.dists.CosineSimilarity(d+2))
+                nengo.Connection(self.pathintegrator.output, self.cleanup, synapse=tau)
+                nengo.Connection(self.cleanup, self.gridcells, synapse=None)
+                nengo.Connection(self.gridcells, self.landmark_ssp_ens.input_a, synapse=tau)
+                                 # eval_points=self.sample_ssps,
+                                 # function=self.sample_ssps)
+            else:
+                nengo.Connection(self.pathintegrator.output, self.landmark_ssp_ens.input_a, synapse=tau)
+
             # Env map
             self.assomemory = AssociativeMemory(mem_n_neurons, d, d, intercept,
                                            voja_learning_rate=voja_learning_rate,
@@ -285,7 +296,8 @@ class SLAMNetwork(nengo.network.Network):
             
             # Estimate position using env map
             self.position_estimate = CircularConvolution(circonv_n_neurons, d, invert_a=True, label='newpos_circonv')
-            nengo.Connection(self.ovc_ens, self.position_estimate.input_a, synapse=tau)
+            nengo.Connection(self.ovc_ens, self.position_estimate.input_a, synapse=tau,
+                             function=lambda x: ssp_space.make_unitary(x))
             # self.assomemory.recall.output=lambda t, x: x
             nengo.Connection(self.assomemory.recall, self.position_estimate.input_b, 
                              synapse=tau, function=lambda x: ssp_space.make_unitary(x))

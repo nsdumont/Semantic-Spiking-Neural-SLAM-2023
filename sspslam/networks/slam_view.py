@@ -179,7 +179,7 @@ class SLAMViewNetwork(nengo.network.Network):
 
     """
     def __init__(self, ssp_space, lm_space, view_rad, n_landmarks,
-        		pi_n_neurons, mem_n_neurons, circonv_n_neurons, 
+        		pi_n_neurons, mem_n_neurons, circonv_n_neurons,
                 tau=0.01, tau_pi = 0.05,
                 update_thres=0.2, vel_scaling_factor =1.0,rad_scaling_factor=1.0, shift_rate=0.1,
                 voja_learning_rate=5e-4, pes_learning_rate=1e-2,
@@ -255,19 +255,21 @@ class SLAMViewNetwork(nengo.network.Network):
             nengo.Connection(self.no_landmark_in_view, self.assomemory.learning, synapse=None)
             
             # Clean-up
-            if gc_n_neurons is None:
-                nengo.Connection(self.pathintegrator.output, self.assomemory.value_input, synapse=tau)
-            elif gc_n_neurons>0:
-                gc_encoders = ssp_space.sample_grid_encoders(gc_n_neurons)
-                cleanup = nengo.Node(lambda t,x: clean_up_fun(x), size_in=d)
-                self.gridcells = nengo.Ensemble(gc_n_neurons,d, encoders = gc_encoders)
-                nengo.Connection(self.pathintegrator.output, cleanup, synapse=tau)
-                nengo.Connection(cleanup, self.gridcells, synapse=tau)
-                nengo.Connection(self.gridcells, self.assomemory.value_input, synapse=tau)
-            else:
-                self.gridcells = nengo.Node(lambda t,x: clean_up_fun(x), size_in=d)
+            if gc_n_neurons<=0:
+                self.gridcells = nengo.Node(lambda t, x: clean_up_fun(x), size_in=d)
                 nengo.Connection(self.pathintegrator.output, self.gridcells, synapse=tau)
                 nengo.Connection(self.gridcells, self.assomemory.value_input, synapse=None)
+
+            elif gc_n_neurons>0:
+                gc_encoders = ssp_space.sample_grid_encoders(gc_n_neurons)
+                self.cleanup = nengo.Node(lambda t,x: clean_up_fun(x), size_in=d)
+                self.gridcells = nengo.Ensemble(gc_n_neurons, d, encoders=gc_encoders,
+                                                intercepts=nengo.dists.CosineSimilarity(d+2))
+                nengo.Connection(self.pathintegrator.output, self.cleanup, synapse=tau)
+                nengo.Connection(self.cleanup, self.gridcells, synapse=None)
+                nengo.Connection(self.gridcells, self.assomemory.value_input, synapse=tau)
+            else:
+                nengo.Connection(self.pathintegrator.output, self.assomemory.value_input, synapse=tau)
             
             # Gate input. Only updates PI using env map if update isn't 'too far off' and object is actually in view
             nengo.Connection(self.assomemory.recall, self.update_state[:d], function=lambda x: ssp_space.make_unitary(x), synapse=tau)
